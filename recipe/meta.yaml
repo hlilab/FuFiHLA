@@ -21,7 +21,7 @@ requirements:
     - bcftools
     - htslib    
     - seqtk
-    - longcalld
+    - longcalld=0.0.4
     - unzip
     - wget 
 
