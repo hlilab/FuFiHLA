@@ -44,9 +44,9 @@ export ALLELE_FASTA
 
 # Define which steps to run (true/false)
 declare -A STEP=(
-  [0]=true
-  [1]=true
-  [2]=true
+  [0]=false
+  [1]=false
+  [2]=false
   [3]=true
   [4]=true
   [5]=true
@@ -71,7 +71,13 @@ step1() {
   local THREADS=20
   local TEMPLATE="${SCRIPT_DIR}/dps-dat/136ref.fa.gz"
   local OPTS="-t ${THREADS} -e10000 -k19 -w19 -g10k -A1 -B4 -O6,26 -E2,1 -s350 -c --end-bonus=10"
-  minimap2 ${OPTS} "${TEMPLATE}" "${INP_READS}" | gzip -c > "${OUT_PAF}"
+  local OPTS2="-x lr:hq -t ${THREADS} -e10000 -k19 -w19 -g10k -A1 -B4 -O6,26 -E2,1 -s350 -c --end-bonus=10"
+  if [[ "${INP_READS}" == *.cram ]]; then
+      samtools fastq -@ 20 --reference "/hlilab/21data/Nanopore/HG002/rep2-2023.05/hs38.fa" "${INP_READS}" \
+	      | minimap2 ${OPTS2} ${TEMPLATE} - | gzip -c > "${OUT_PAF}"
+  else
+      minimap2 ${OPTS} "${TEMPLATE}" "${INP_READS}" | gzip -c > "${OUT_PAF}" 
+  fi
 }
 
 step2() {
@@ -96,8 +102,13 @@ step2() {
     "${s2_out_pref}" \
     > "${output_reads_id}"
 
-  seqtk subseq "${s2_inp_reads}" "${output_reads_id}" \
-    | seqtk seq -A | gzip -c > "${output_reads_fa}"
+  if [[ "$s2_inp_reads" == *.cram ]]; then
+      samtools view -h -T "/hlilab/21data/Nanopore/HG002/rep2-2023.05/hs38.fa" -N "${output_reads_id}" "${s2_inp_reads}" \
+	      | samtools fasta - | gzip -c> "${output_reads_fa}"
+  else
+      seqtk subseq "${s2_inp_reads}" "${output_reads_id}" \
+        | seqtk seq -A | gzip -c > "${output_reads_fa}"
+  fi
 }
 
 step3() {
