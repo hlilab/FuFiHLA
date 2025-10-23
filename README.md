@@ -44,16 +44,17 @@ This will create a directory called `ref_data`, which would contain the referenc
 
 run the pipeline:
 ```bash
-# with default reference allele sequences, version XXX (add IMGT version number here)
+# with default reference allele sequences, version IPD-IMGT/HLA-V3.61.0
 fufihla --fa <input_reads.fa.gz> --out <output_dir>
 # or with the specific version of reference data
-fufihla --fa <input_reads.fa.gz> --out <output_dir> --refdir <reference data directory>  --debug
+fufihla --fa <input_reads.fa.gz> --out <output_dir> --refdir <reference data directory> --hifi/--ont --debug
 ```
 
 Arguments
 - `<input_reads.fa.gz>` : raw PacBio HiFi reads (.fa/.fa.gz/.fq/.fq.gz)
 - `<output_dir>` : directory for pipeline outputs
 - `--refdir <reference_data_directory>`(optional): path to reference allele dataset; if omitted, uses the default bundled set
+- `--hifi/--ont`(optional): choose HiFi long reads or Nanopore long read data as input, default is `--hifi`
 - `--debug`(optional): keep all intermediate files; otherwise only consensus results are kept
 
 
