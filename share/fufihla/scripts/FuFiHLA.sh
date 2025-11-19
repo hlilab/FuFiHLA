@@ -44,9 +44,9 @@ export ALLELE_FASTA
 
 # Define which steps to run (true/false)
 declare -A STEP=(
-  [0]=false
-  [1]=false
-  [2]=false
+  [0]=true
+  [1]=true
+  [2]=true
   [3]=true
   [4]=true
   [5]=true
