@@ -241,83 +241,110 @@ def csstr_to_var(csstr, fro, to) :
             cur_pos += len(signal)
     return(out)
 
-
-# Now assign read to allele based on mismatch in the overlapped mapping interval.
 best_for_read = {}
+
 for read, cand_list in dat.items():
     if not cand_list:
         continue
-    best_candidate = cand_list[0]
-    best_set = {tuple(best_candidate)}
-    for candidate in cand_list[1:]:
-        # Extract values for best_candidate.
-        mismatch0 = best_candidate[3]
-        nm0 = best_candidate[4]
-        start0 = int(best_candidate[7])
-        end0 = int(best_candidate[8])
-        ds_str0 = best_candidate[9]
-        # Extract candidate's values.
-        mismatch1 = candidate[3]
-        nm1 = candidate[4]
-        start1 = int(candidate[7])
-        end1 = int(candidate[8])
-        ds_str1 = candidate[9]
-        
-        # Adjust differences at the start.
-        if start1 > start0:
-            diff = start1 - start0
-            sub0, subnm0 = subtract_mismatches_from_start(ds_str0, diff)
-            mismatch0_adj = mismatch0 - sub0
-            nm0_adj = nm0 - subnm0
-            mismatch1_adj = mismatch1
-            nm1_adj = nm1
-        elif start1 < start0:
-            diff = start0 - start1
-            sub1, subnm1 = subtract_mismatches_from_start(ds_str1, diff)
-            mismatch1_adj = mismatch1 - sub1
-            nm1_adj = nm1 - subnm1
-            mismatch0_adj = mismatch0
-            nm0_adj = nm0
-        else:
-            mismatch0_adj = mismatch0
-            nm0_adj = nm0
-            mismatch1_adj = mismatch1
-            nm1_adj = nm1
-        
-        # Adjust differences at the end.
-        if end1 > end0:
-            diff = end1 - end0
-            sub1, subnm1 = subtract_mismatches_from_end(ds_str1, diff)
-            mismatch1_adj -= sub1
-            nm1_adj -= subnm1
-        elif end1 < end0:
-            diff = end0 - end1
-            sub0, subnm0 = subtract_mismatches_from_end(ds_str0, diff)
-            mismatch0_adj -= sub0
-            nm0_adj -= subnm0
 
-        # Select candidate with lower adjusted mismatches.
-        if mismatch1_adj < mismatch0_adj:
-            best_candidate = candidate
-        elif mismatch1_adj == mismatch0_adj:
-            if nm1_adj < nm0_adj:
-                best_candidate = candidate
-            # Else, if equal, keep current.
-    best_for_read[read] = best_candidate
+    # group candidates by gene
+    by_gene = {}
+    for c in cand_list:
+        by_gene.setdefault(c[0], []).append(c)
 
-with open(os.path.join(OUTDIR,"read_assignment.txt"),"w") as f:    
-    for key, value in best_for_read.items():
-        f.write(f"{key}\t{value[1]}\n")
+    per_gene_best_sets = {}  # gene -> set(tuple(candidate))
 
-allele_to_reads = defaultdict(list)
+    for gene, cand in by_gene.items():
+        if not cand:
+            continue
 
-for read_id, best_candidate in best_for_read.items():
-    allele = best_candidate[1]
-    allele_to_reads[allele].append(read_id)
+        allele_best = cand[0]
+        best_set = {tuple(allele_best)}
 
-with open(os.path.join(OUTDIR,"allele_to_reads.txt"), "w") as out:
+        for allele in cand[1:]:
+            if allele[1] == allele_best[1]:
+                continue
+
+            mismatch0  = allele_best[3]
+            nm0        = allele_best[4]
+            start_best = int(allele_best[7])
+            end_best   = int(allele_best[8])
+            ds_str0    = allele_best[9]
+
+            mismatch1  = allele[3]
+            nm1        = allele[4]
+            start_curr = int(allele[7])
+            end_curr   = int(allele[8])
+            ds_str1    = allele[9]
+
+            # Adjust start
+            if start_curr > start_best:
+                change_start = start_curr - start_best
+                sub_m0, sub_nm0 = subtract_mismatches_from_start(ds_str0, change_start)
+                mismatch0 -= sub_m0
+                nm0       -= sub_nm0
+            elif start_curr < start_best:
+                change_start = start_best - start_curr
+                sub_m1, sub_nm1 = subtract_mismatches_from_start(ds_str1, change_start)
+                mismatch1 -= sub_m1
+                nm1       -= sub_nm1
+
+            # Adjust end
+            if end_curr > end_best:
+                change_end = end_curr - end_best
+                sub_m1, sub_nm1 = subtract_mismatches_from_end(ds_str1, change_end)
+                mismatch1 -= sub_m1
+                nm1       -= sub_nm1
+            elif end_curr < end_best:
+                change_end = end_best - end_curr
+                sub_m0, sub_nm0 = subtract_mismatches_from_end(ds_str0, change_end)
+                mismatch0 -= sub_m0
+                nm0       -= sub_nm0
+
+            if mismatch1 < mismatch0 or (mismatch1 == mismatch0 and nm1 < nm0):
+                allele_best = allele
+                best_set = {tuple(allele_best)}
+            elif mismatch1 == mismatch0 and nm1 == nm0:
+                best_set.add(tuple(allele))
+
+        per_gene_best_sets[gene] = best_set
+
+    best_for_read[read] = {
+        gene: [(al[1], al[5], al[3], al[4]) for al in best_set]
+        for gene, best_set in per_gene_best_sets.items()
+    }
+
+########################################################################
+# Write read->allele mapping
+########################################################################
+
+
+with open(os.path.join(OUTDIR, "read_assignment.txt"), "w") as f:
+    for read, per_gene in best_for_read.items():
+        allele_names = []
+        for gene, best_alleles in per_gene.items():
+            allele_names.extend([allele for allele, _, _, _ in best_alleles])
+        f.write(f"{read}\t{','.join(allele_names)}\n")
+
+allele_to_reads = defaultdict(set)
+allele_support  = defaultdict(float)
+
+for read_id, per_gene in best_for_read.items():
+    if not per_gene:
+        continue
+
+    for gene, gene_winners in per_gene.items():
+        if not gene_winners:
+            continue
+        k = len(gene_winners)
+        frac = 1.0 / k
+        for allele_name, _, _, _ in gene_winners:
+            allele_to_reads[allele_name].add(read_id)
+            allele_support[allele_name] += frac
+
+with open(os.path.join(OUTDIR, "allele_to_reads.txt"), "w") as out:
     for allele, reads in allele_to_reads.items():
-        out.write(f"{allele}\t{','.join(reads)}\n")
+        out.write(f"{allele}\t{','.join(sorted(reads))}\n")
 
 
 ###########################################################
@@ -326,35 +353,42 @@ with open(os.path.join(OUTDIR,"allele_to_reads.txt"), "w") as out:
 INPUT_READS_FA = reads_fa
 REF_ALLELES_FA = allele_refs_fa
 THREADS          = 4
-MM2OPTS          = ["-ax","asm10","--ds",f"-t{THREADS}"]
-GENES            = ["HLA-A","HLA-B","HLA-C","HLA-DQA1","HLA-DQB1","HLA-DRB1"]
+MM2OPTS          = ["-ax","asm20","-B2","--ds",f"-t{THREADS}","--end-bonus=20"]
+GENE_LIST_PATH = os.environ.get("GENE_LIST") 
+with open(GENE_LIST_PATH) as f: 
+    GENES = [line.strip() for line in f if line.strip()]
+HOMOZYGOUS_THRESHOLD = float(os.environ.get("FUFIHLA_HOM_THRESHOLD", "4"))
+print(f"Homozygous ratio threshold used: {HOMOZYGOUS_THRESHOLD}", file=sys.stderr)
 
 subdirs = ["lists","fas","bam","vcf","consensus","paf","vcf_log"]
 for sub in subdirs:
     os.makedirs(os.path.join(OUTDIR, sub), exist_ok=True)
 
 
+def first3_fields(allele: str) -> str:
+    return ":".join(allele.split(":")[:3])
+
 # Detect and force homozygosity when one allele has ≥4× more reads
 gene_alleles = {}
 for gene in GENES:
     # Find all called alleles for this gene
-    alleles = [a for a in allele_to_reads if a.startswith(gene + "*")]
+    alleles = sorted(a for a in allele_to_reads if a.startswith(gene + "*"))
     if len(alleles) == 2:
-        r0 = allele_to_reads[alleles[0]]
-        r1 = allele_to_reads[alleles[1]]
-        if len(r0) >= 4 * len(r1):
-            # Allele[0] is dominant → homozygous
-            gene_alleles[gene] = [alleles[0], alleles[0]]
-        elif len(r1) >= 4 * len(r0):
-            # Allele[1] is dominant → homozygous
-            gene_alleles[gene] = [alleles[1], alleles[1]]
+        r0, r1 = alleles[0], alleles[1]
+        n0 = allele_support.get(r0, 0.0)
+        n1 = allele_support.get(r1, 0.0)
+        if n1 == 0.0 and n0 > 0.0:
+            gene_alleles[gene] = [r0, r0]
+        elif n0 == 0.0 and n1 > 0.0:
+            gene_alleles[gene] = [r1, r1]
+        elif n0 >= HOMOZYGOUS_THRESHOLD * n1:
+            gene_alleles[gene] = [r0, r0]
+        elif n1 >= HOMOZYGOUS_THRESHOLD * n0:
+            gene_alleles[gene] = [r1, r1]
         else:
-            # Balanced → keep as-is
-            gene_alleles[gene] = alleles
+            gene_alleles[gene] = [r0, r1]
     else:
-        # Unexpected count (e.g. 0 or >2): just pass through
         gene_alleles[gene] = alleles
-
 
 new_allele_list = []
 known_allele_list = []
@@ -364,36 +398,48 @@ for gene in GENES:
     if len(alleles) != 2:
         print(f"Warning: expected 2 alleles for {gene}, found {len(alleles)} → {alleles}", file=sys.stderr)
 
-    for idx, allele in enumerate(alleles, start=1):
+
+    # If first three fields are the same but fourth field different
+    same_first3 = False
+    template_allele = None
+    merged_reads = None
+
+    if len(alleles) == 2:
+        a0, a1 = alleles[0], alleles[1]
+        same_first3 = (a0 != a1) and (first3_fields(a0) == first3_fields(a1))
+        #same_first3 = (first3_fields(a0) == first3_fields(a1))
+        if same_first3:
+            # Deterministic choice of template
+            template_allele = min(a0, a1)
+            merged_reads = set(allele_to_reads.get(a0, set())) | set(allele_to_reads.get(a1, set()))
+    
+    if same_first3:
+        allele = template_allele
         allele_safe = allele.replace(":", "_")
-        list_file = os.path.join(OUTDIR,    "lists",      f"{allele_safe}.list")
-        reads_fa_out = os.path.join(OUTDIR, "fas", f"{allele_safe}_reads.fa")
-        ref_normal   = os.path.join(OUTDIR, "fas", f"{allele}.fa")
-        ref_fa    = os.path.join(OUTDIR, "fas", f"{allele_safe}.fa")
-        bam       = os.path.join(OUTDIR,    "bam",        f"{gene}_asm{idx}.bam")
-        vcf       = os.path.join(OUTDIR,    "vcf",        f"{gene}_asm{idx}.vcf.gz")
-        cons_fa   = os.path.join(OUTDIR,    "consensus",  f"{gene}_asm{idx}.fa")
+        reads_set = merged_reads
 
-        # 1) Write the list of reads
+        list_file    = os.path.join(OUTDIR, "lists", f"{gene}_{allele_safe}.list")
+        reads_fa_out = os.path.join(OUTDIR, "fas",  f"{gene}_{allele_safe}_reads.fa")
+        ref_normal   = os.path.join(OUTDIR, "fas",  f"{allele}.fa")
+        ref_fa       = os.path.join(OUTDIR, "fas",  f"{allele_safe}.fa")
+        bam          = os.path.join(OUTDIR, "bam",  f"{gene}_shared.bam")
+        vcf          = os.path.join(OUTDIR, "vcf",  f"{gene}_shared.vcf.gz")
+        vcf_log      = os.path.join(OUTDIR, "vcf_log", f"{gene}_shared.vcf")
+
+        cons_fa_h1   = os.path.join(OUTDIR, "consensus", f"{gene}_asm1.fa")
+        cons_fa_h2   = os.path.join(OUTDIR, "consensus", f"{gene}_asm2.fa")
+
         with open(list_file, "w") as lf:
-            lf.write("\n".join(allele_to_reads[allele]) + "\n")
-        
-        # 2) Extract reads FASTA
-        reads_fa_out = os.path.join(OUTDIR, "fas", f"{gene}_{allele_safe}_reads.fa")
-        with open(reads_fa_out, "w") as rf:
-            subprocess.run(
-                ["seqtk", "subseq", INPUT_READS_FA, list_file],
-                stdout=rf, check=True
-            )
+            lf.write("\n".join(sorted(reads_set)) + "\n")
 
-        # 3) Extract reference allele sequence via seqtk:
-        # 3a) Write a one‑line “ref_list” of the sanitized (":" to "_") allele name
+        with open(reads_fa_out, "w") as rf:
+            subprocess.run(["seqtk", "subseq", INPUT_READS_FA, list_file],
+                           stdout=rf, check=True)
+
         ref_list = os.path.join(OUTDIR, "lists", f"{gene}_{allele_safe}_ref.list")
         with open(ref_list, "w") as rl:
             rl.write(allele_safe + "\n")
 
-
-        # 3b) Decompress the big allele FASTA, sanitize headers, and subseq
         with open(ref_fa, "w") as rf2:
             cmd = (
                 f"gzip -dc {allele_refs_fa} | "
@@ -402,92 +448,178 @@ for gene in GENES:
             )
             subprocess.run(cmd, shell=True, stdout=rf2, check=True)
 
-
         with open(ref_normal, "w") as rfn:
-            subprocess.run(
-                f"sed '1s/_/:/g' {ref_fa}",
-                shell=True,
-                check=True,
-                stdout=rfn
-            )
+            subprocess.run(f"sed '1s/_/:/g' {ref_fa}",
+                           shell=True, check=True, stdout=rfn)
 
+        subprocess.run(["samtools", "faidx", ref_fa], check=True)
 
-        # 3c) Index the per‑allele FASTA for downstream tools
-        subprocess.run(["samtools", "faidx", ref_fa], check=True)       
-
-        # 4) Map reads → allele, sort & index
-        p1 = subprocess.Popen(
-            ["minimap2"] + MM2OPTS + [ref_fa, reads_fa_out],
-            stdout=subprocess.PIPE
-        )
-        p2 = subprocess.Popen(
-            ["samtools","sort", "-o", bam, f"-@{THREADS}", "-m2g"],
-            stdin=p1.stdout
-        )
+        p1 = subprocess.Popen(["minimap2"] + MM2OPTS + [ref_fa, reads_fa_out],
+                              stdout=subprocess.PIPE)
+        p2 = subprocess.Popen(["samtools", "sort", "-o", bam, f"-@{THREADS}", "-m2g"],
+                              stdin=p1.stdout)
         p1.stdout.close()
         p2.communicate()
-        subprocess.run(["samtools","index", bam], check=True)
+        subprocess.run(["samtools", "index", bam], check=True)
 
-        # 5) Call variants & index using longcallD by Yan Gao 
-        # "https://github.com/yangao07/longcallD"
-        
-        cl = subprocess.Popen(
-            ["longcallD", "call", ref_fa, bam],
-            stdout=subprocess.PIPE
-        )
+        cl = subprocess.Popen(["longcallD", "call", ref_fa, bam],
+                              stdout=subprocess.PIPE)
 
-        # write raw VCF for log purposes
-        vcf_log = os.path.join(OUTDIR, "vcf_log", f"{gene}_asm{idx}.vcf")
-        tee = subprocess.Popen(
-            ["tee", vcf_log],
-            stdin=cl.stdout,
-            stdout=subprocess.PIPE
-        )
+        tee = subprocess.Popen(["tee", vcf_log],
+                               stdin=cl.stdout, stdout=subprocess.PIPE)
         cl.stdout.close()
 
-        km = subprocess.Popen(
-            ["python3", KEEP_MAJOR],
-            stdin=tee.stdout,
-            stdout=subprocess.PIPE
-        )
+        with open(vcf, "wb") as vf:
+            subprocess.run(["bgzip", "-c"],
+                           stdin=tee.stdout, stdout=vf, check=True)
         tee.stdout.close()
 
-        # compress & write final VCF
-        with open(vcf, "wb") as vf:
-            subprocess.run(
-                ["bgzip","-c"],
-                stdin=km.stdout,
-                stdout=vf,
-                check=True
-            )
-        km.stdout.close()
+        subprocess.run(["bcftools", "index", "-t", vcf], check=True)
 
-        # index it
-        subprocess.run(["bcftools","index","-t", vcf], check=True)
-
-        # 6a) Check whether the vcf is empty; if so, skip consensus/mapping
         with gzip.open(vcf, "rt") as vaf:
             has_variant = any(line.strip() and not line.startswith('#') for line in vaf)
-        if has_variant:
-            new_allele_list.append(cons_fa)
-        else:
-            known_allele_list.append(cons_fa) 
 
-        # 6b) Build consensus
-        with open(cons_fa, "w") as cf:
+        for hap, cons_fa in [(1, cons_fa_h1), (2, cons_fa_h2)]:
+            with open(cons_fa, "w") as cf:
+                p1 = subprocess.Popen(["bcftools", "consensus", "-H", str(hap), "-f", ref_fa, vcf],
+                                      stdout=subprocess.PIPE, text=True)
+                p2 = subprocess.Popen(["sed", fr"s/^>/>cons_h{hap}_/"],
+                                      stdin=p1.stdout, stdout=cf, text=True)
+                p1.stdout.close()
+                p2.communicate()
+
+        if has_variant:
+            new_allele_list.extend([cons_fa_h1, cons_fa_h2])
+        else:
+            known_allele_list.extend([cons_fa_h1, cons_fa_h2])
+
+        continue
+
+    else:
+        for idx, allele in enumerate(alleles, start=1):
+            allele_safe = allele.replace(":", "_")
+            list_file = os.path.join(OUTDIR,    "lists",      f"{allele_safe}.list")
+            reads_fa_out = os.path.join(OUTDIR, "fas", f"{allele_safe}_reads.fa")
+            ref_normal   = os.path.join(OUTDIR, "fas", f"{allele}.fa")
+            ref_fa    = os.path.join(OUTDIR, "fas", f"{allele_safe}.fa")
+            bam       = os.path.join(OUTDIR,    "bam",        f"{gene}_asm{idx}.bam")
+            vcf       = os.path.join(OUTDIR,    "vcf",        f"{gene}_asm{idx}.vcf.gz")
+            cons_fa   = os.path.join(OUTDIR,    "consensus",  f"{gene}_asm{idx}.fa")
+
+            # 1) Write the list of reads
+            with open(list_file, "w") as lf:
+                lf.write("\n".join(sorted(allele_to_reads.get(allele, []))) + "\n")
+
+            # 2) Extract reads FASTA
+            reads_fa_out = os.path.join(OUTDIR, "fas", f"{gene}_{allele_safe}_reads.fa")
+            with open(reads_fa_out, "w") as rf:
+                subprocess.run(
+                    ["seqtk", "subseq", INPUT_READS_FA, list_file],
+                    stdout=rf, check=True
+                )
+
+            # 3) Extract reference allele sequence via seqtk:
+            # 3a) Write a one‑line “ref_list” of the sanitized (":" to "_") allele name
+            ref_list = os.path.join(OUTDIR, "lists", f"{gene}_{allele_safe}_ref.list")
+            with open(ref_list, "w") as rl:
+                rl.write(allele_safe + "\n")
+
+
+            # 3b) Decompress the big allele FASTA, sanitize headers, and subseq
+            with open(ref_fa, "w") as rf2:
+                cmd = (
+                    f"gzip -dc {allele_refs_fa} | "
+                    f"sed 's/:/_/g' | "
+                    f"seqtk subseq - {ref_list}"
+                )
+                subprocess.run(cmd, shell=True, stdout=rf2, check=True)
+
+
+            with open(ref_normal, "w") as rfn:
+                subprocess.run(
+                    f"sed '1s/_/:/g' {ref_fa}",
+                    shell=True,
+                    check=True,
+                    stdout=rfn
+                )
+
+
+            # 3c) Index the per‑allele FASTA for downstream tools
+            subprocess.run(["samtools", "faidx", ref_fa], check=True)       
+
+            # 4) Map reads → allele, sort & index
             p1 = subprocess.Popen(
-                ["bcftools", "consensus", "-f", ref_fa, vcf],
-                stdout=subprocess.PIPE,
-                text=True
+                ["minimap2"] + MM2OPTS + [ref_fa, reads_fa_out],
+                stdout=subprocess.PIPE
             )
             p2 = subprocess.Popen(
-                ["sed", r"s/^>/>cons_/"],
-                stdin=p1.stdout,
-                stdout=cf,
-                text=True
+                ["samtools","sort", "-o", bam, f"-@{THREADS}", "-m2g"],
+                stdin=p1.stdout
             )
             p1.stdout.close()
-            p2.communicate()         
+            p2.communicate()
+            subprocess.run(["samtools","index", bam], check=True)
+
+            # 5) Call variants & index using longcallD by Yan Gao 
+            # "https://github.com/yangao07/longcallD"
+            
+            cl = subprocess.Popen(
+                ["longcallD", "call", ref_fa, bam],
+                stdout=subprocess.PIPE
+            )
+
+            # write raw VCF for log purposes
+            vcf_log = os.path.join(OUTDIR, "vcf_log", f"{gene}_asm{idx}.vcf")
+            tee = subprocess.Popen(
+                ["tee", vcf_log],
+                stdin=cl.stdout,
+                stdout=subprocess.PIPE
+            )
+            cl.stdout.close()
+
+            km = subprocess.Popen(
+                ["python3", KEEP_MAJOR],
+                stdin=tee.stdout,
+                stdout=subprocess.PIPE
+            )
+            tee.stdout.close()
+
+            # compress & write final VCF
+            with open(vcf, "wb") as vf:
+                subprocess.run(
+                    ["bgzip","-c"],
+                    stdin=km.stdout,
+                    stdout=vf,
+                    check=True
+                )
+            km.stdout.close()
+
+            # index it
+            subprocess.run(["bcftools","index","-t", vcf], check=True)
+
+            # 6a) Check whether the vcf is empty; if so, skip consensus/mapping
+            with gzip.open(vcf, "rt") as vaf:
+                has_variant = any(line.strip() and not line.startswith('#') for line in vaf)
+            if has_variant:
+                new_allele_list.append(cons_fa)
+            else:
+                known_allele_list.append(cons_fa) 
+
+            # 6b) Build consensus
+            with open(cons_fa, "w") as cf:
+                p1 = subprocess.Popen(
+                    ["bcftools", "consensus", "-f", ref_fa, vcf],
+                    stdout=subprocess.PIPE,
+                    text=True
+                )
+                p2 = subprocess.Popen(
+                    ["sed", fr"s/^>/>cons_h{idx}_/"],
+                    stdin=p1.stdout,
+                    stdout=cf,
+                    text=True
+                )
+                p1.stdout.close()
+                p2.communicate()         
  
 with open(os.path.join(OUTDIR, "new_allele.fa"), "w") as out:
     for fname in new_allele_list:
@@ -495,11 +627,15 @@ with open(os.path.join(OUTDIR, "new_allele.fa"), "w") as out:
             out.write(infile.read())
 
 def normalize_header(header_line: str) -> str:
-    token = header_line.strip().split()[0]      
+    token = header_line.strip().split()[0]
     allele = token.lstrip('>')
-    if allele.startswith("cons_"):  # strip the prefix if present
-        allele = allele[len("cons_"):]
-    return allele.replace('_', ':')  # → HLA-A*02:06:01:01
+
+    for prefix in ("cons_h1_", "cons_h2_", "cons_"):
+        if allele.startswith(prefix):
+            allele = allele[len(prefix):]
+            break
+
+    return allele.replace('_', ':')
 
 with open(os.path.join(OUTDIR, "known_allele.paf"), "w") as out_paf:
     for cons_fa in known_allele_list:

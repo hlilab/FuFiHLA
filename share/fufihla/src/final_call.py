@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import sys
 import re
+import argparse
+import gzip
 
 ###########################################################
 # Call Closest Allele
@@ -35,13 +37,11 @@ def parse_gene_annot(file_path):
 def check_exon_coverage(cds_intervals, ref_start, ref_end, threshold=1.0):
     for s,e in cds_intervals:
         length = e - s + 1
-        # Compute overlap between [interval_start,interval_end] and [ref_start,ref_end]
         ov = max(0, min(e, ref_end) - max(s, ref_start) + 1)
         if ov / length < threshold:
             return False
     return True
 
-# Parse the cs tag
 def parse_cs(cs, ref_offset=1):
     token_pattern = re.compile(r'(:\d+)|(\*[A-Za-z]{2})|([\+\-][A-Za-z]+)')
     pos = ref_offset
@@ -61,8 +61,7 @@ def parse_cs(cs, ref_offset=1):
             pos += length
     return muts
 
-# Penalty & PID calculation
-PENALTY_CDS     = 10
+PENALTY_CDS     = 9999
 PENALTY_NONCDS  = 1
 
 def mutation_penalty(mutations, cds_intervals):
@@ -71,6 +70,12 @@ def mutation_penalty(mutations, cds_intervals):
         in_cds = any(s <= pos <= e for s,e in cds_intervals)
         pen += (PENALTY_CDS if in_cds else PENALTY_NONCDS)
     return pen
+
+def has_cds_mutation(mutations, cds_intervals):
+    for _, pos, _ in mutations:
+        if any(s <= pos <= e for s,e in cds_intervals):
+            return True
+    return False
 
 def calculate_pid(cs):
     matches = total = 0
@@ -85,7 +90,6 @@ def calculate_pid(cs):
             total   += 1
         elif tok.startswith('-'):
             total   += (len(tok) - 1)
-        # Insertions are ignored in PID
     pid = (matches / total * 100) if total else 0.0
     return matches, total, pid
 
@@ -93,64 +97,147 @@ def find_csstr(line):
     m = re.search(r'cs:Z:(\S+)', line)
     return m.group(1) if m else ''
 
-def main():
-    if len(sys.argv) < 2:
-        sys.stderr.write("Usage: final_call_commonprefix.py <gene_annot.info>\n")
-        sys.exit(1)
-    gene_data = parse_gene_annot(sys.argv[1])
-    da = {}
+def find_nm(line):
+    m = re.search(r'\bNM:i:(\d+)\b', line)
+    return int(m.group(1)) if m else None
 
-    for line in sys.stdin:
-        line = line.rstrip()
-        if not line: continue
-        ll = line.split('\t')
-        if len(ll) < 10: continue
+def opengz(path, mode="rt"):
+    if path.endswith(".gz"):
+        return gzip.open(path, mode)
+    return open(path, mode)
 
-        allele     = ll[5]
-        rec_seq    = ll[0]
-        try:
-            ref_len  = float(ll[6])
-            ref_s    = int(ll[7])
-            ref_e    = int(ll[8])
-            aln_len  = ref_e - ref_s
+###########################################################
+# CDS perfect-match search
+###########################################################
 
+def load_cds_perfect_hits(paf_cds_gz):
+    """
+    CDS PAF from:
+      minimap2 -x splice:hq --ds --end-bonus 10 consensus.fa ref.cds.fa.gz
 
-        except (ValueError, IndexError):
-            continue
+    We want alignments where the *consensus query* is fully covered AND NM:i:0:
+      qstart == 0
+      qend   == qlen
+      NM:i:0
 
-
-        # Skip short alignments
-        if aln_len / ref_len < 0.5:
-            continue
-
-        # If we have CDS intervals, enforce exon coverage
-        if allele in gene_data:
-            cds = gene_data[allele]
-            # Convert ref_start to 1-based
-            if not check_exon_coverage(cds, ref_s + 1, ref_e, threshold=0.95):
+    Return: dict[rec_seq] = cds_allele (target name)
+    """
+    hits = {}
+    with opengz(paf_cds_gz, "rt") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            ll = line.split("\t")
+            if len(ll) < 12:
+                continue
+            cds_allele = ll[0]
+            rec_seq = ll[5]
+            try:
+                qlen = int(ll[1])
+                qstart = int(ll[2])
+                qend = int(ll[3])
+            except ValueError:
                 continue
 
-        # Account for PAF’s 0-based target start:
-        ref_s = int(ll[7])  
-        ref_start_1based = ref_s + 1
-        csstr    = find_csstr(line)
-        mutations = parse_cs(csstr, ref_offset=ref_start_1based)
+            nm = find_nm(line)
+            if nm is None:
+                continue
 
-        matches, total_bases, pid = calculate_pid(csstr)
-        # Compute penalty
-        if allele in gene_data:
-            pen = mutation_penalty(mutations, gene_data[allele])
-        else:
-            pen = csstr.count('*') + csstr.count('+') + csstr.count('-')
+            if qstart == 0 and qend == qlen and nm == 0:
+                # keep first perfect hit if multiple
+                if rec_seq not in hits:
+                    hits[rec_seq] = cds_allele
+    return hits
 
-        da.setdefault(rec_seq, []).append([allele, aln_len, pen, pid, line])
+###########################################################
+# Main
+###########################################################
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--gene-annot", required=True, help="gene_annot.info")
+    ap.add_argument("--paf-gene", required=True, help="PAF (complete allele mapping), gz ok")
+    ap.add_argument("--paf-cds", required=True, help="PAF (CDS splice mapping), gz ok")
+    args = ap.parse_args()
+
+    gene_data = parse_gene_annot(args.gene_annot)
+    cds_perfect = load_cds_perfect_hits(args.paf_cds)
+
+    da = {}
+
+    # Read complete-allele PAF
+    with opengz(args.paf_gene, "rt") as fh:
+        for line in fh:
+            line = line.rstrip()
+            if not line:
+                continue
+            ll = line.split('\t')
+            if len(ll) < 10:
+                continue
+
+            allele  = ll[5]
+            rec_seq = ll[0]
+
+            try:
+                ref_len  = float(ll[6])
+                ref_s    = int(ll[7])
+                ref_e    = int(ll[8])
+                aln_len  = ref_e - ref_s
+            except (ValueError, IndexError):
+                continue
+
+            # Skip short alignments
+            if ref_len > 0 and aln_len / ref_len < 0.5:
+                continue
+
+            # If we have CDS intervals, enforce exon coverage
+            if allele in gene_data:
+                cds = gene_data[allele]
+                if not check_exon_coverage(cds, ref_s + 1, ref_e, threshold=0.95):
+                    continue
+
+            ref_start_1based = ref_s + 1
+            csstr = find_csstr(line)
+            mutations = parse_cs(csstr, ref_offset=ref_start_1based)
+
+            matches, total_bases, pid = calculate_pid(csstr)
+
+            nm = find_nm(line)
+
+            # Compute penalty + detect CDS mutation 
+            cds_mut = False
+            if allele in gene_data:
+                pen = mutation_penalty(mutations, gene_data[allele])
+                cds_mut = has_cds_mutation(mutations, gene_data[allele])
+            else:
+                pen = csstr.count('*') + csstr.count('+') + csstr.count('-')
+
+            da.setdefault(rec_seq, []).append([allele, aln_len, pen, pid, nm, cds_mut, line])
 
     # Pick best per reconstructed seq
     for rec in da:
-        # Sort by penalty ↑, then aln_len ↓
         best = sorted(da[rec], key=lambda x: (x[2], -x[1]))[0]
-        allele, aln_len, pen, pid, raw = best
-        print(f"{allele}\t{aln_len}\t{pen}\t{pid:.2f}\t@{raw}")
+        allele, aln_len, pen, pid, nm, cds_mut, raw = best
+
+        # Rule:
+        # - if NM==0 OR no mutation in CDS: keep complete allele
+        # - else if CDS has a full-length perfect match (NM==0) -> output CDS allele
+        #   but if cds allele is the same as complete allele string, keep complete
+        # - else keep complete
+        chosen = allele
+
+        if not ((nm == 0) or (cds_mut is False)):
+            cds_hit = cds_perfect.get(rec)
+            if cds_hit is not None:
+                if cds_hit == allele:
+                    chosen = allele
+                else:
+                    chosen = cds_hit
+            else:
+                chosen = allele
+
+        print(f"{chosen}\t{aln_len}\t{pen}\t{pid:.2f}\t@{raw}")
 
 if __name__ == '__main__':
     main()

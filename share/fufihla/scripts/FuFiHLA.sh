@@ -5,7 +5,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd -P)"
 
 REF_DIR="${FUFIHLA_REF_DIR:-$SCRIPT_DIR/dps-dat}"
-DEFAULT_GENES="$SCRIPT_DIR/dps-dat/genes.list"
 ALLELE_FASTA="$REF_DIR/ref.gene.fa.gz"
 DEBUG="${FUFIHLA_DEBUG:-0}"
 
@@ -17,7 +16,7 @@ if [[ -z "$INP_READS" || -z "$OUT_DIR" ]]; then
 fi
 mkdir -p "$OUT_DIR"
 
-GENE_LIST="$DEFAULT_GENES"
+GENE_LIST="$FUFIHLA_DEFAULT_GENES"
 if [[ ! -r "$GENE_LIST" ]]; then
   echo "ERROR: Gene list not found/readable: $GENE_LIST" >&2
   exit 1
@@ -188,31 +187,47 @@ step5() {
 
 
 step6() {
-  echo "Step 6: Realign reconstructed sequences"
-  local QUERY="${ALLELE_FASTA}"
+  echo "Step 6: Realign reconstructed sequences (complete + cds)"
   local CONS="${OUT_DIR}/new_allele.fa"
-  local OUT_PAF="${OUT_DIR}/s6_out.paf.gz"
   local THREADS=20
-  local OPTS="-t ${THREADS} -s350 -c --cs --end-bonus=10 -I10"
-  minimap2 ${OPTS} "${QUERY}" "${CONS}" | gzip -c > "${OUT_PAF}"
+
+  # complete allele ref
+  local REF_GENE="${SCRIPT_DIR}/dps-dat/ref.gene.fa.gz"
+  local OUT_PAF_GENE="${OUT_DIR}/s6_out.gene.paf.gz"
+  local OPTS_GENE="-t ${THREADS} -s350 -c --cs --end-bonus=10 -I10"
+  minimap2 ${OPTS_GENE} "${REF_GENE}" "${CONS}" | gzip -c > "${OUT_PAF_GENE}"
+
+  # CDS ref (spliced alignment, consensus as QUERY, CDS refs as TARGET)
+  local REF_CDS="${SCRIPT_DIR}/dps-dat/ref.cds.fa.gz"
+  local OUT_PAF_CDS="${OUT_DIR}/s6_out.cds.paf.gz"
+  local OPTS_CDS="-t ${THREADS} -c --cs --end-bonus=10 --ds -x splice:hq"
+  minimap2 ${OPTS_CDS} "${CONS}" "${REF_CDS}" | gzip -c > "${OUT_PAF_CDS}"
 }
 
 step7() {
   echo "Step 7: Final allele calls"
-  local IN_PAF="${OUT_DIR}/s6_out.paf.gz"
+  local IN_PAF_GENE="${OUT_DIR}/s6_out.gene.paf.gz"
+  local IN_PAF_CDS="${OUT_DIR}/s6_out.cds.paf.gz"
   local REF_INFO="${SCRIPT_DIR}/dps-dat/gene_annot.info"
   local OUT_PAF="${OUT_DIR}/new_allele.paf"
   local FINAL_SCRIPT="${SCRIPT_DIR}/src/final_call.py"
 
-  time zcat "${IN_PAF}" | python3 "${FINAL_SCRIPT}" "${REF_INFO}" > "${OUT_PAF}"
+  time python3 "${FINAL_SCRIPT}" \
+      --gene-annot "${REF_INFO}" \
+      --paf-gene "${IN_PAF_GENE}" \
+      --paf-cds "${IN_PAF_CDS}" \
+    > "${OUT_PAF}"
+
   awk '{ print $6, $0 }' "${OUT_DIR}/known_allele.paf" \
     > "${OUT_DIR}/known_allele.output.paf"
   cat "${OUT_PAF}" "${OUT_DIR}/known_allele.output.paf" \
     | sort -t$'\t' -k1,1
+
   >&2 echo "Final call complete"
   mv -f "${OUT_DIR}"/*.paf "${OUT_DIR}/paf/"
   mv -f "${OUT_DIR}"/*.fa "${OUT_DIR}/fas/"
 }
+
 
 main() {
   for i in {0..7}; do

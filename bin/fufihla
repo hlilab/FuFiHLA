@@ -13,15 +13,17 @@ REF_DIR_DEFAULT="$DATADIR/dps-dat"
 REF_DIR="${FUFIHLA_REF_DIR:-$REF_DIR_DEFAULT}"
 DEBUG=0
 MODE="hifi"
+HOM_THRESHOLD=4
 
 usage() {
-  echo "Usage: fufihla --fa reads.fa.gz --out outdir [--refdir dir] [--debug] [--ont|--hifi]"
+  echo "Usage: fufihla --fa reads.fa.gz --out outdir [--refdir dir] [--hom-threshold FLOAT] [--debug] [--ont|--hifi]"
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --fa) IN_FA="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
+    --hom-threshold) HOM_THRESHOLD="$2"; shift 2 ;;
     --refdir) REF_DIR="$2"; shift 2 ;;
     --debug) DEBUG=1; shift ;;
     --ont) MODE="ont"; shift ;;
@@ -44,6 +46,7 @@ fi
 export FUFIHLA_REF_DIR="$REF_DIR"
 export FUFIHLA_DEBUG="$DEBUG"
 export FUFIHLA_DEFAULT_GENES="$REF_DIR/genes.list"
+export FUFIHLA_HOM_THRESHOLD="$HOM_THRESHOLD"
 
 if [[ "$MODE" == "ont" ]]; then
   echo "[fufihla] Running in ONT mode ..."
