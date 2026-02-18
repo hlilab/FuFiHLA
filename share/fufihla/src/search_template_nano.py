@@ -1,3 +1,4 @@
+import os
 import sys
 import math
 import re
@@ -393,6 +394,9 @@ with open(sys.argv[1] + "_mapping.csv", "wt") as fp:
 from itertools import combinations_with_replacement
 
 genes = ['HLA-A', 'HLA-B', 'HLA-C', 'HLA-DRB1', 'HLA-DQA1', 'HLA-DQB1']
+GENE_LIST_PATH = os.environ.get("GENE_LIST")
+with open(GENE_LIST_PATH) as f:
+    genes = [line.strip() for line in f if line.strip()]
 template_alleles = []
 
 def short_naming(allele_name):

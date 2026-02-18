@@ -243,10 +243,6 @@ def csstr_to_var(csstr, fro, to) :
 
 
 def _is_candidate_better(c0, c1):
-    """
-    Return True if c1 is better than c0 using your overlap-adjusted mismatch
-    logic (identical to your code, just wrapped as a function).
-    """
     # Extract values for c0
     mismatch0 = c0[3]
     nm0       = c0[4]
@@ -354,6 +350,11 @@ REF_ALLELES_FA = allele_refs_fa
 THREADS          = 4
 MM2OPTS          = ["-ax","lr:hq","-s100","--ds",f"-t{THREADS}"]
 GENES            = ["HLA-A","HLA-B","HLA-C","HLA-DQA1","HLA-DQB1","HLA-DRB1"]
+GENE_LIST_PATH = os.environ.get("GENE_LIST")
+with open(GENE_LIST_PATH) as f:
+    GENES = [line.strip() for line in f if line.strip()]
+HOMOZYGOUS_THRESHOLD = float(os.environ.get("FUFIHLA_HOM_THRESHOLD", "4"))
+print(f"Homozygous ratio threshold used: {HOMOZYGOUS_THRESHOLD}", file=sys.stderr)
 
 subdirs = ["lists","fas","bam","vcf","consensus","paf","vcf_log"]
 for sub in subdirs:
@@ -368,10 +369,10 @@ for gene in GENES:
     if len(alleles) == 2:
         r0 = allele_to_reads[alleles[0]]
         r1 = allele_to_reads[alleles[1]]
-        if len(r0) >= 4 * len(r1):
+        if len(r0) >= HOMOZYGOUS_THRESHOLD * len(r1):
             # Allele[0] is dominant → homozygous
             gene_alleles[gene] = [alleles[0], alleles[0]]
-        elif len(r1) >= 4 * len(r0):
+        elif len(r1) >= HOMOZYGOUS_THRESHOLD * len(r0):
             # Allele[1] is dominant → homozygous
             gene_alleles[gene] = [alleles[1], alleles[1]]
         else:
