@@ -7,7 +7,7 @@ source:
   sha256: c33bbc26626e562a6d20a6017e0e8a5fc9a584976ef45852af194726a6c90a6c
 
 build:
-  number: 0
+  number: 1
   noarch: generic
   run_exports:
     - {{ pin_subpackage("fufihla", max_pin="x.x") }}
@@ -21,7 +21,7 @@ requirements:
     - bcftools
     - htslib    
     - seqtk
-    - longcalld ==0.0.4
+    - longcalld
     - unzip
     - wget 
 
